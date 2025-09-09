@@ -1,7 +1,6 @@
 import subprocess
 import sys
 
-# Eksik kütüphaneleri otomatik yükleme
 def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
@@ -19,51 +18,65 @@ except ImportError:
     install("wmi")
     import wmi
 
-def get_detailed_drive_info():
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    print("matplotlib kütüphanesi eksik, yükleniyor...")
+    install("matplotlib")
+    import matplotlib.pyplot as plt
+
+def get_detailed_drive_info_and_plot_subplots():
     c = wmi.WMI()
 
-    # LogicalDisk -> Partition eşleştirmesi
     logical_to_partition = {}
     for mapping in c.Win32_LogicalDiskToPartition():
-        logical = mapping.Dependent.DeviceID   # Örn: C:
-        partition = mapping.Antecedent.DeviceID  # Örn: Disk #0, Partition #1
+        logical = mapping.Dependent.DeviceID
+        partition = mapping.Antecedent.DeviceID
         logical_to_partition[logical] = partition
 
-    # Partition -> PhysicalDisk eşleştirmesi
     partition_to_physical = {}
     for mapping in c.Win32_DiskDriveToDiskPartition():
-        partition = mapping.Dependent.DeviceID   # Disk #0, Partition #1
-        physical = mapping.Antecedent.DeviceID   # \\.\PHYSICALDRIVE0
+        partition = mapping.Dependent.DeviceID
+        physical = mapping.Antecedent.DeviceID
         partition_to_physical[partition] = physical
 
-    # Fiziksel disk bilgilerini önceden al
     physical_disk_info = {d.DeviceID: d for d in c.Win32_DiskDrive()}
 
     print("=== Disk Bilgileri ===")
+
+    devices = []
+    used_sizes_gb = []
+    free_sizes_gb = []
+    total_sizes_gb = []
+    disk_models = []
+
     for part in psutil.disk_partitions(all=False):
-        usage = psutil.disk_usage(part.mountpoint)
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+        except PermissionError:
+            continue
+
         print(f"\nMantıksal Sürücü: {part.device}")
         print(f"  Dosya Sistemi: {part.fstype}")
         print(f"  Toplam: {usage.total/(1024**3):.2f} GB")
         print(f"  Kullanılan: {usage.used/(1024**3):.2f} GB")
         print(f"  Boş: {usage.free/(1024**3):.2f} GB")
 
-        # Mantıksal diskten partition’a geçiş
-        logical_id = part.device.replace("\\", "")  # C:\
-        if logical_id.endswith(":"):
-            logical_id = logical_id  # Zaten doğru formatta
-        else:
+        logical_id = part.device.replace("\\", "")
+        if not logical_id.endswith(":"):
             logical_id = logical_id + ":"
 
         partition = logical_to_partition.get(logical_id)
 
+        model = "Bilinmiyor"
+
         if partition:
-            # Partition'dan fiziksel diske geçiş
             physical = partition_to_physical.get(partition)
             if physical:
                 disk = physical_disk_info.get(physical)
                 if disk:
-                    print(f"  Fiziksel Disk: {disk.DeviceID} ({disk.Model})")
+                    model = disk.Model.strip()
+                    print(f"  Fiziksel Disk: {disk.DeviceID} ({model})")
                     print(f"  Fiziksel Disk Boyutu: {int(disk.Size)/(1024**3):.2f} GB")
                     if disk.MediaType:
                         print(f"  Tür: {disk.MediaType}")
@@ -74,5 +87,45 @@ def get_detailed_drive_info():
         else:
             print("  Mantıksal disk partition'a eşlenemedi!")
 
+        devices.append(part.device)
+        used_sizes_gb.append(usage.used / (1024**3))
+        free_sizes_gb.append(usage.free / (1024**3))
+        total_sizes_gb.append(usage.total / (1024**3))
+        disk_models.append(model)
+
+    count = len(devices)
+    cols = 3
+    rows = (count + cols - 1) // cols
+
+    fig, axs = plt.subplots(rows, cols, figsize=(5 * cols, 5 * rows))
+    axs = axs.flatten()
+
+    for i in range(count):
+        sizes = [used_sizes_gb[i], free_sizes_gb[i]]
+        labels = [
+            f"Dolu: {used_sizes_gb[i]:.1f} GB",
+            f"Boş: {free_sizes_gb[i]:.1f} GB"
+        ]
+
+        title = f"{devices[i]} - {disk_models[i]}"
+
+        axs[i].pie(
+            sizes,
+            labels=labels,
+            autopct="%1.1f%%",
+            colors=["#ff9999", "#99ff99"],
+            startangle=140,
+            wedgeprops={"edgecolor": "w"},
+            textprops={"fontsize": 10},
+        )
+        axs[i].set_title(title, fontsize=11)
+        axs[i].axis("equal")
+
+    for j in range(count, len(axs)):
+        axs[j].axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
 if __name__ == "__main__":
-    get_detailed_drive_info()
+    get_detailed_drive_info_and_plot_subplots()
